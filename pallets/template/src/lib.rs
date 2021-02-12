@@ -4,8 +4,11 @@
 /// Learn more about FRAME and the core library of Substrate FRAME pallets:
 /// https://substrate.dev/docs/en/knowledgebase/runtime/frame
 
-use frame_support::{decl_module, decl_storage, decl_event, decl_error, dispatch, traits::Get};
+use frame_support::{
+	decl_module, decl_storage, decl_event, decl_error, dispatch, traits::Get, traits::OnInitialize, ensure, StorageMap
+};
 use frame_system::ensure_signed;
+use sp_std::vec::Vec;
 
 #[cfg(test)]
 mod mock;
@@ -29,6 +32,10 @@ decl_storage! {
 		// Learn more about declaring storage items:
 		// https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
 		Something get(fn something): Option<u32>;
+		// leku
+		// Storage item for our proofs (1st ups)
+		// Maps a proof to the user who made the claim and when they made it.
+		Proofs: map hasher(blake2_128_concat) Vec<u8> => (T::AccountId, T::BlockNumber);
 	}
 }
 
@@ -39,6 +46,11 @@ decl_event!(
 		/// Event documentation should end with an array that provides descriptive names for event
 		/// parameters. [something, who]
 		SomethingStored(u32, AccountId),
+		// leku
+		// Event emitted when a proof has been claimed [who, claim]
+		ClaimCreated(AccountId, Vec<u8>),
+		// Event emitted when a claim is revoked by the owner [who, claim]
+		ClaimRevoked(AccountId, Vec<u8>),
 	}
 );
 
@@ -49,12 +61,20 @@ decl_error! {
 		NoneValue,
 		/// Errors should have helpful documentation associated with them.
 		StorageOverflow,
+		// leku
+		// Proof has already been claimed
+		ProofAlreadyClaimed,
+		// Proof does not exist, cannot be revoked
+		NoSuchProof,
+		// Proof claimed by another account, caller cant revoke it
+		NotProofOwner,
 	}
 }
 
 // Dispatchable functions allows users to interact with the pallet and invoke state changes.
 // These functions materialize as "extrinsics", which are often compared to transactions.
 // Dispatchable functions must be annotated with a weight and must return a DispatchResult.
+// leku - this is where most of the magic will happen
 decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		// Errors must be initialized if they are used by the pallet.
@@ -98,6 +118,56 @@ decl_module! {
 					Ok(())
 				},
 			}
+		}
+
+		// leku - 1stup
+		// run a job every 24 hours
+		fn on_initialize(_n: u64) {
+			// assumes block time is 6 seconds / polkadot
+			if (_n % 14400 == 0) {
+				// create_claim(origin)
+			}
+		}
+
+		// Allow a user to to claim ownership (1st up) of an unclaimed proof
+		#[weight = 10_000]
+		fn create_claim(origin, proof: Vec<u8>) {
+			// check that the extrinsic was signed and get the signer
+			// this function will return an error if the extrinsic is not signed.
+			let sender = ensure_signed(origin)?;
+
+			// Verify that the specified proof (1st up) has not already been claimed
+			ensure!(!Proofs::<T>::contains_key(&proof), Error::<T>::ProofAlreadyClaimed);
+
+			// Get the block number from the FRAME system module
+			let current_block = <frame_system::Module<T>>::block_number();
+
+			// Store proof w/ sender and block number
+			Proofs::<T>::insert(&proof, (&sender, current_block));
+		}
+
+		// allow the owner to revoke their claim
+		// we might remove this - leku
+		#[weight = 10_000]
+		fn revoke_claim(origin, proof: Vec <u8>) {
+			// check that the extrinsic was signed and get the signer
+			// will return error if extrinsic is not signed.
+			let sender = ensure_signed(origin)?;
+
+			// verify the specified proof has been claimed
+			ensure!(Proofs::<T>::contains_key(&proof), Error::<T>::NoSuchProof);
+
+			// get the owner of the claim
+			let (owner, _) = Proofs::<T>::get(&proof);
+
+			// verify the sender of the current call is the claim owner
+			ensure!(sender == owner, Error::<T>::NotProofOwner);
+
+			// Remove claim from storage
+			Proofs::<T>::remove(&proof);
+
+			// Emit event that the claim was erased
+			Self::deposit_event(RawEvent::ClaimRevoked(sender, proof));
 		}
 	}
 }
